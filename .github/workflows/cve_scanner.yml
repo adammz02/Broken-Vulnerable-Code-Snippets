@@ -62,7 +62,7 @@ jobs:
       # nonzero exit code status.
       - name: Upload report as an artifact
         # This will upload generated report as an GitHub artifact which you can download later.
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: cve_report
           path: 'cve-bin-tool-report.html'

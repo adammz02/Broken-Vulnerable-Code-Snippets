@@ -1,0 +1,18 @@
+name: CVE scanner
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build_and_scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run CVE Binary Tool Action
+        uses: intel/cve-bin-tool-action@v2 # Use the latest version
+        with:
+          scan_mode: 'repo-only' # or 'sbom-only', 'both'
+          # nvd_api_key: ${{ secrets.NVD_API_KEY }} # Optional: if you have an NVD API key

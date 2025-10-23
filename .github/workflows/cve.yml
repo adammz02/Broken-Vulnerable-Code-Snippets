@@ -1,4 +1,4 @@
-name: CVE scanner
+name: CVE scanner v2
 on:
   push:
   pull_request:
@@ -18,10 +18,27 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Show workspace (debug)
+        run: |
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          echo "--- top-level files ---"
+          ls -la
+          echo "--- repo tree (first 200 lines) ---"
+          find . -maxdepth 3 -type f | sed -n '1,200p'
+        shell: bash
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
+
+      - name: Verify python & pip
+        run: |
+          python -V || true
+          which python || true
+          python -m pip --version || true
+          python -m pip list || true
+        shell: bash
 
       - name: Get date
         id: get-date
@@ -46,49 +63,81 @@ jobs:
             Linux-cve-bin-tool-
 
       - name: Install CVE Binary Tool
+        id: install-cve
         run: |
-          python -m pip install --upgrade pip
-          # Use main branch for latest features; use `pip install cve-bin-tool` to pin PyPI release.
-          pip install --no-cache-dir git+https://github.com/intel/cve-bin-tool@main
+          set -o pipefail
+          python -m pip install --upgrade pip 2>&1 | tee pip-upgrade.log
+          # Use main for latest features; swap to `pip install cve-bin-tool` to use PyPI.
+          python -m pip install --no-cache-dir git+https://github.com/intel/cve-bin-tool@main 2>&1 | tee cve-install.log
+        shell: bash
 
       - name: Build package if present
         id: build
         run: |
-          set -e
+          set -euo pipefail
           BUILT=0
           if [ -f setup.py ]; then
             echo "Found setup.py — building wheel with setup.py"
-            python -m pip install --upgrade wheel setuptools
-            python setup.py bdist_wheel
-            BUILT=1
+            python -m pip install --upgrade wheel setuptools 2>&1 | tee build-deps.log
+            python setup.py bdist_wheel 2>&1 | tee build.log || BUILT=0
+            [ -d dist ] && BUILT=1 || BUILT=$BUILT
           elif [ -f pyproject.toml ]; then
             echo "Found pyproject.toml — building wheel with PEP 517 build"
-            python -m pip install --upgrade build
-            python -m build --wheel
-            BUILT=1
+            python -m pip install --upgrade build 2>&1 | tee build-deps.log
+            python -m build --wheel 2>&1 | tee build.log || BUILT=0
+            [ -d dist ] && BUILT=1 || BUILT=$BUILT
           else
             echo "No setup.py or pyproject.toml found — skipping build step"
           fi
           echo "built=$BUILT" >> $GITHUB_OUTPUT
         shell: bash
+        continue-on-error: true
 
       - name: Scan built artifact or repository
+        id: scan
         run: |
-          # Prefer scanning built artifacts if present; otherwise scan repository tree.
+          set -euo pipefail
           if [ "${{ steps.build.outputs.built }}" = "1" ] && [ -d dist ]; then
             echo "Scanning dist/ for built packages"
-            cve-bin-tool dist -f html -o cve-bin-tool-report.html -x || true
+            cve-bin-tool dist -f html -o cve-bin-tool-report.html -x 2>&1 | tee scan.log || true
           else
             echo "No built artifacts found — scanning repository files"
-            # Scan common locations (repo root). Adjust paths if you only want to scan certain directories.
-            cve-bin-tool . -f html -o cve-bin-tool-report.html -x || true
+            # Adjust scan target as needed (e.g., src/ or specific directories)
+            cve-bin-tool . -f html -o cve-bin-tool-report.html -x 2>&1 | tee scan.log || true
           fi
         continue-on-error: true
         shell: bash
 
-      - name: Upload report as an artifact
+      - name: Upload scan report artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cve_report
           path: cve-bin-tool-report.html
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        run: |
+          echo "Collecting diagnostics because a prior step failed."
+          echo "=== ls -la workspace ===" > diagnostics.txt
+          ls -la >> diagnostics.txt 2>&1 || true
+          echo -e "\n=== df -h ===" >> diagnostics.txt
+          df -h >> diagnostics.txt 2>&1 || true
+          echo -e "\n=== pip freeze ===" >> diagnostics.txt
+          python -m pip freeze >> diagnostics.txt 2>&1 || true
+          echo -e "\n=== Recent logs (if any) ===" >> diagnostics.txt
+          for f in pip-upgrade.log cve-install.log build-deps.log build.log scan.log; do
+            if [ -f "$f" ]; then
+              echo -e "\n--- $f ---" >> diagnostics.txt
+              tail -n 500 "$f" >> diagnostics.txt
+            fi
+          done
+          echo "Diagnostics written to diagnostics.txt"
+        shell: bash
+
+      - name: Upload diagnostics (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cve-scan-diagnostics
+          path: diagnostics.txt

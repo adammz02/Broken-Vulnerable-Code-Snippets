@@ -38,7 +38,6 @@ jobs:
             ${{ runner.os }}-pip-
 
       - name: Cache cve-bin-tool database
-        # cve-bin-tool stores its DB under ~/.cache/cve-bin-tool by default
         uses: actions/cache@v4
         with:
           path: ~/.cache/cve-bin-tool
@@ -49,26 +48,43 @@ jobs:
       - name: Install CVE Binary Tool
         run: |
           python -m pip install --upgrade pip
-          # Use main branch for latest features; swap to `pip install cve-bin-tool`
-          # if you prefer the published PyPI version.
+          # Use main branch for latest features; use `pip install cve-bin-tool` to pin PyPI release.
           pip install --no-cache-dir git+https://github.com/intel/cve-bin-tool@main
 
-      - name: Build package
-        # Replace this with your actual build steps if different.
+      - name: Build package if present
+        id: build
         run: |
-          python -m pip install --upgrade wheel setuptools
-          python setup.py bdist_wheel
+          set -e
+          BUILT=0
+          if [ -f setup.py ]; then
+            echo "Found setup.py — building wheel with setup.py"
+            python -m pip install --upgrade wheel setuptools
+            python setup.py bdist_wheel
+            BUILT=1
+          elif [ -f pyproject.toml ]; then
+            echo "Found pyproject.toml — building wheel with PEP 517 build"
+            python -m pip install --upgrade build
+            python -m build --wheel
+            BUILT=1
+          else
+            echo "No setup.py or pyproject.toml found — skipping build step"
+          fi
+          echo "built=$BUILT" >> $GITHUB_OUTPUT
+        shell: bash
 
-      - name: Scan built package
-        # The tool may exit with a non-zero code when CVEs are found; keep job from failing.
-        # Use "|| true" as a safety in case continue-on-error isn't enough in some runners.
+      - name: Scan built artifact or repository
         run: |
-          if [ -d dist ]; then
+          # Prefer scanning built artifacts if present; otherwise scan repository tree.
+          if [ "${{ steps.build.outputs.built }}" = "1" ] && [ -d dist ]; then
+            echo "Scanning dist/ for built packages"
             cve-bin-tool dist -f html -o cve-bin-tool-report.html -x || true
           else
-            echo "No dist directory found, skipping scan."
+            echo "No built artifacts found — scanning repository files"
+            # Scan common locations (repo root). Adjust paths if you only want to scan certain directories.
+            cve-bin-tool . -f html -o cve-bin-tool-report.html -x || true
           fi
         continue-on-error: true
+        shell: bash
 
       - name: Upload report as an artifact
         if: always()
